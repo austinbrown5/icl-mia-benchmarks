@@ -1,0 +1,7 @@
+vllm
+datasets
+nltk
+numpy
+scikit-learn
+scipy
+rouge-score
