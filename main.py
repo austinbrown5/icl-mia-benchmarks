@@ -2,7 +2,7 @@ from vllm import LLM, SamplingParams
 from datasets import load_dataset
 import nltk
 from nltk import word_tokenize
-from nltk import StanfordTagger
+from nltk.tag import StanfordPOSTagger
 import random
 import numpy as np
 from prompts import Prompt
@@ -12,13 +12,14 @@ from rouge_score import rouge_scorer
 
 def main():
     # Usage
-    model_name = "TheBloke/MetaMath-13B-V1.0-AWQ"
+    model_name = "meta-math/MetaMath-Mistral-7B"
     dataset_name = "meta-math/MetaMathQA"
 
     # load data
-    meta_math_ds = load_dataset(dataset_name)
+    meta_math_ds = load_dataset(dataset_name, streaming = True) # load subset
+    meta_math_ds = meta_math_ds.take(1000) # take only the first 1000 examples while debugging
 
-    llm = LLM(model=model_name, quantization="awq", dtype="half")
+    llm = LLM(model=model_name, dtype="half")
     sampling_params = SamplingParams(temperature=0.7, top_p=0.95)
 
     meta_math_training = meta_math_ds['train']
@@ -52,7 +53,7 @@ def main():
         general_prompt = prompt.get_prompt("general").format(first_piece = guided_prompt_insert)
 
         #ts guessing prompt and target generation, question based method
-        tagger = StanfordTagger()
+        tagger = StanfordPOSTagger()
         ts_prompt, ts_target = ts_guessing_prompt(data_point, tagger, 'query')
 
         prompts['general_prompts'].append(general_prompt)
@@ -76,7 +77,7 @@ def main():
 
     t_statistic, p_value = stats.ttest_rel(guided_scores, general_scores)
 
-    guided_scores = [1 if p_value < 0.05 else 0 for _ in range(len(guided_scores))]
+    guided_scores = [1 if p_value < 0.05 else 0 for _ in range(len(guided_scores))] # change to use p-value as membership score ( try p value, 1 - p value)
 
     ts_scores = [1 if output.outputs[0].text.strip().lower() == target.strip().lower() else 0 
                  for output, target in zip(ts_outputs, targets['ts'])]
@@ -98,22 +99,21 @@ def main():
     aucroc_cdd = roc_auc_score(truths, cdd_scores)
     aucroc_min_k = roc_auc_score(truths, min_k_scores)
 
-    fpr_threshold = 0.01  # 1% FPR
-    tpr_guided = tpr_at_fpr(truths, guided_scores, fpr_threshold)
-    tpr_ts = tpr_at_fpr(truths, ts_scores, fpr_threshold)
-    tpr_cdd = tpr_at_fpr(truths, cdd_scores, fpr_threshold)
-    tpr_min_k = tpr_at_fpr(truths, min_k_scores, fpr_threshold)
-
-    #print
     print(f"AUCROC Guided: {aucroc_guided}")
     print(f"AUCROC TS: {aucroc_ts}")
     print(f"AUCROC CDD: {aucroc_cdd}")
     print(f"AUCROC Min-k: {aucroc_min_k}")
 
-    print(f"TPR@1%FPR Guided: {tpr_guided}")
-    print(f"TPR@1%FPR TS: {tpr_ts}")
-    print(f"TPR@1%FPR CDD: {tpr_cdd}")
-    print(f"TPR@1%FPR Min-k: {tpr_min_k}")
+    for fpr_threshold in [0.01, 0.05, 0.10, 0.25]:
+        tpr_guided = tpr_at_fpr(truths, guided_scores, fpr_threshold)
+        tpr_ts = tpr_at_fpr(truths, ts_scores, fpr_threshold)
+        tpr_cdd = tpr_at_fpr(truths, cdd_scores, fpr_threshold)
+        tpr_min_k = tpr_at_fpr(truths, min_k_scores, fpr_threshold)
+
+        print(f"TPR@1%FPR Guided: {tpr_guided}")
+        print(f"TPR@1%FPR TS: {tpr_ts}")
+        print(f"TPR@1%FPR CDD: {tpr_cdd}")
+        print(f"TPR@1%FPR Min-k: {tpr_min_k}")
 
 def tpr_at_fpr(y_true, y_score, fpr_threshold):
     fpr, tpr, _ = roc_curve(y_true, y_score)
