@@ -9,6 +9,7 @@ from prompts import Prompt
 from sklearn.metrics import roc_auc_score, roc_curve
 from scipy import stats
 from rouge_score import rouge_scorer
+import os
 
 def main():
     # Usage
@@ -17,9 +18,12 @@ def main():
 
     # load data
     meta_math_ds = load_dataset(dataset_name, streaming = True) # load subset
-    meta_math_ds = meta_math_ds.take(1000) # take only the first 1000 examples while debugging
+    # meta_math_ds = meta_math_ds.take(1000) # take only the first 1000 examples while debugging
+    meta_math_ds['train'] = meta_math_ds['train'].take(1000)
+    print('Dataset has been loaded')
 
-    llm = LLM(model=model_name, dtype="half")
+    # llm = LLM(model=model_name, dtype="half")
+    llm = LLM(model=model_name, dtype="half", max_model_len=30000) #decrease model max length to fit in kv cache for vllm
     sampling_params = SamplingParams(temperature=0.7, top_p=0.95)
 
     meta_math_training = meta_math_ds['train']
@@ -29,21 +33,25 @@ def main():
         "general_prompts": [],
         "guided_prompts": [],
         "ts_prompts": [],
-        "standard_queries": meta_math_training['query']
+        "standard_queries": []
     }
 
     targets = {
         "guided": [],
         "ts": [],
-        "answers": meta_math_training['response']
+        "answers": []
     }
     
     # load stanford pos tagger, need to change to not hard code paths
+    print('Loading POS Tagger...')
     os.environ['CLASSPATH']="/usr/project/xtmp/arb153/icl-mia-benchmarks/stanford-postagger-full-2020-11-17/stanford-postagger.jar"
     os.environ["STANFORD_MODELS"] = "/usr/project/xtmp/arb153/icl-mia-benchmarks/stanford-postagger-full-2020-11-17/models"
     tagger = StanfordPOSTagger('english-bidirectional-distsim.tagger')
+    print('POS Tagger Loaded')
 
+    
     #going to go through the dataset and generate our unique prompts, do not need these for our min_k, perplexity, or cdd attacks
+    print('Generating Guided Prompting and TS-Guessing Prompts...')
     for data_point in meta_math_training:
 
         #split for guided prompting
@@ -63,31 +71,37 @@ def main():
         prompts['general_prompts'].append(general_prompt)
         prompts['guided_prompts'].append(guided_prompt)
         
-
         prompts['ts_prompts'].append(ts_prompt)
+
+        prompts['standard_queries'].append(data_point['query'])
 
         targets['guided'].append(guided_prompt_target)
         targets['ts'].append(ts_target)
+        targets['answers'].append(data_point['response'])
     
+    print('Prompts Generated')
+
+
+    print('Performing Guided Prompting attack...')
     general_outputs = llm.generate(prompts['general_promts'], sampling_params)
     guided_outputs = llm.generate(prompts['guided_prompts'], sampling_params)
-
-    ts_outputs = llm.generate(prompts['ts_prompts'], sampling_params)
-
     scorer = rouge_scorer.RougeScorer(['rougeL'], use_stemmer=True)
-
     general_scores = [scorer.score(ref, hyp)['rougeL'].fmeasure for ref, hyp in zip(targets['answers'], [output.outputs[0].text for output in general_outputs])]
     guided_scores = [scorer.score(ref, hyp)['rougeL'].fmeasure for ref, hyp in zip(targets['guided'], [output.outputs[0].text for output in guided_outputs])]
-
-    # t_statistic, p_value = stats.ttest_rel(guided_scores, general_scores)
-
+     # t_statistic, p_value = stats.ttest_rel(guided_scores, general_scores)
     # guided_scores = [1 if p_value < 0.05 else 0 for _ in range(len(guided_scores))] # change to use p-value as membership score ( try p value, 1 - p value)
-
     gp_scores = [guided - general for guided, general in zip(guided_scores, general_scores)]
+
+
+    print('Performing TS Guessing attack...')
+    ts_outputs = llm.generate(prompts['ts_prompts'], sampling_params)        
     ts_scores = [1 if output.outputs[0].text.strip().lower() == target.strip().lower() else 0 
                  for output, target in zip(ts_outputs, targets['ts'])]
 
+    print('Performing CDD attack...')
     cdd_scores = cdd(prompts= prompts['standard_queries'], llm= llm, alpha = 0.05, xi = 0.01 ) #this will be binary 1s and 0s
+    
+    print('Performing Min K attack...')
     min_k_scores, loss_scores = min_k_loss(prompts['standard_queries'], llm, k_percent= 10)
 
     truths = np.ones(len(prompts)) # we know the model has been contaminated
@@ -267,5 +281,5 @@ def get_peak(samples, s_0, alpha):
 
     return peak
 
-if __name__ == "main":
+if __name__ == "__main__":
     main()
