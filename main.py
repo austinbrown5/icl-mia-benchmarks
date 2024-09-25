@@ -79,10 +79,11 @@ def main():
     general_scores = [scorer.score(ref, hyp)['rougeL'].fmeasure for ref, hyp in zip(targets['answers'], [output.outputs[0].text for output in general_outputs])]
     guided_scores = [scorer.score(ref, hyp)['rougeL'].fmeasure for ref, hyp in zip(targets['guided'], [output.outputs[0].text for output in guided_outputs])]
 
-    t_statistic, p_value = stats.ttest_rel(guided_scores, general_scores)
+    # t_statistic, p_value = stats.ttest_rel(guided_scores, general_scores)
 
-    guided_scores = [1 if p_value < 0.05 else 0 for _ in range(len(guided_scores))] # change to use p-value as membership score ( try p value, 1 - p value)
+    # guided_scores = [1 if p_value < 0.05 else 0 for _ in range(len(guided_scores))] # change to use p-value as membership score ( try p value, 1 - p value)
 
+    gp_scores = [guided - general for guided, general in zip(guided_scores, general_scores)]
     ts_scores = [1 if output.outputs[0].text.strip().lower() == target.strip().lower() else 0 
                  for output, target in zip(ts_outputs, targets['ts'])]
 
@@ -94,11 +95,11 @@ def main():
     assert len(truths) == len(cdd_scores)
     assert len(truths) == len(min_k_scores)
     assert len(truths) == len(loss_scores)
-    assert len(truths) == len(guided_scores)
+    assert len(truths) == len(gp_scores)
     assert len(truths) == len(ts_scores)
 
     #scoring
-    aucroc_guided = roc_auc_score(truths, guided_scores)
+    aucroc_guided = roc_auc_score(truths, gp_scores)
     aucroc_ts = roc_auc_score(truths, ts_scores)
     aucroc_cdd = roc_auc_score(truths, cdd_scores)
     aucroc_min_k = roc_auc_score(truths, min_k_scores)
@@ -109,7 +110,7 @@ def main():
     print(f"AUCROC Min-k: {aucroc_min_k}")
 
     for fpr_threshold in [0.01, 0.05, 0.10, 0.25]:
-        tpr_guided = tpr_at_fpr(truths, guided_scores, fpr_threshold)
+        tpr_guided = tpr_at_fpr(truths, gp_scores, fpr_threshold)
         tpr_ts = tpr_at_fpr(truths, ts_scores, fpr_threshold)
         tpr_cdd = tpr_at_fpr(truths, cdd_scores, fpr_threshold)
         tpr_min_k = tpr_at_fpr(truths, min_k_scores, fpr_threshold)
