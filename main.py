@@ -37,6 +37,11 @@ def main():
         "ts": [],
         "answers": meta_math_training['response']
     }
+    
+    # load stanford pos tagger, need to change to not hard code paths
+    os.environ['CLASSPATH']="/usr/project/xtmp/arb153/icl-mia-benchmarks/stanford-postagger-full-2020-11-17/stanford-postagger.jar"
+    os.environ["STANFORD_MODELS"] = "/usr/project/xtmp/arb153/icl-mia-benchmarks/stanford-postagger-full-2020-11-17/models"
+    tagger = StanfordPOSTagger('english-bidirectional-distsim.tagger')
 
     #going to go through the dataset and generate our unique prompts, do not need these for our min_k, perplexity, or cdd attacks
     for data_point in meta_math_training:
@@ -53,7 +58,6 @@ def main():
         general_prompt = prompt.get_prompt("general").format(first_piece = guided_prompt_insert)
 
         #ts guessing prompt and target generation, question based method
-        tagger = StanfordPOSTagger()
         ts_prompt, ts_target = ts_guessing_prompt(data_point, tagger, 'query')
 
         prompts['general_prompts'].append(general_prompt)
