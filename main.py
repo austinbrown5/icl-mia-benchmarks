@@ -232,11 +232,13 @@ def cdd(prompts, llm, alpha = 0.05, xi = 0.01):
         s_0 = greedy_sample.text
 
         peak = get_peak(generated_texts, s_0, alpha)
-        is_contaminated = peak / len(generated_texts) > xi
-        if is_contaminated:
-            cdd_scores.append(1)
-        else:
-            cdd_scores.append(0)
+        # is_contaminated = peak > xi
+        # if is_contaminated:
+        #     cdd_scores.append(1)
+        # else:
+        #     cdd_scores.append(0)
+        cdd_scores.append(peak) #* we want a membership score instead of a binary value, 
+        #? these scores will be very low, is that alright
     return cdd_scores
 
 def levenshtein_distance(s1, s2):
