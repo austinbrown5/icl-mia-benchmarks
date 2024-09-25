@@ -5,5 +5,3 @@ numpy
 scikit-learn
 scipy
 rouge-score
-random
-os
