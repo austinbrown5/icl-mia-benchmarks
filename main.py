@@ -10,6 +10,9 @@ from sklearn.metrics import roc_auc_score, roc_curve
 from scipy import stats
 from rouge_score import rouge_scorer
 import os
+import ssl
+import time
+
 
 def main():
     # Usage
@@ -46,12 +49,23 @@ def main():
     print('Loading POS Tagger...')
     os.environ['CLASSPATH']="/usr/project/xtmp/arb153/icl-mia-benchmarks/stanford-postagger-full-2020-11-17/stanford-postagger.jar"
     os.environ["STANFORD_MODELS"] = "/usr/project/xtmp/arb153/icl-mia-benchmarks/stanford-postagger-full-2020-11-17/models"
-    tagger = StanfordPOSTagger('english-bidirectional-distsim.tagger')
+    tagger = StanfordPOSTagger('english-left3words-distsim.tagger')
     print('POS Tagger Loaded')
+
+    try:
+        _create_unverified_https_context = ssl._create_unverified_context
+    except AttributeError:
+        pass
+    else:
+        ssl._create_default_https_context = _create_unverified_https_context
+
+    nltk.download('punkt_tab')
 
     
     #going to go through the dataset and generate our unique prompts, do not need these for our min_k, perplexity, or cdd attacks
     print('Generating Guided Prompting and TS-Guessing Prompts...')
+
+    start_time = time.time()
     for data_point in meta_math_training:
 
         #split for guided prompting
@@ -79,11 +93,10 @@ def main():
         targets['ts'].append(ts_target)
         targets['answers'].append(data_point['response'])
     
-    print('Prompts Generated')
-
+    print(f'Prompts Generated. Run time was {time.time() - start_time}')
 
     print('Performing Guided Prompting attack...')
-    general_outputs = llm.generate(prompts['general_promts'], sampling_params)
+    general_outputs = llm.generate(prompts['general_prompts'], sampling_params)
     guided_outputs = llm.generate(prompts['guided_prompts'], sampling_params)
     scorer = rouge_scorer.RougeScorer(['rougeL'], use_stemmer=True)
     general_scores = [scorer.score(ref, hyp)['rougeL'].fmeasure for ref, hyp in zip(targets['answers'], [output.outputs[0].text for output in general_outputs])]
@@ -142,7 +155,7 @@ def tpr_at_fpr(y_true, y_score, fpr_threshold):
 def guided_prompt_split_fn(example, text_key):
     splits = {'guided_prompt_part_1': '', 'guided_prompt_part_2': ''}
     text = example[text_key]
-    sentences = nltk.sent_tokenize(text)
+    sentences = nltk.sent_tokenize(text, )
 
     if len(sentences) == 1:
         # Split the single sentence in half
