@@ -7,18 +7,21 @@ import json
 from prompts import Prompt
 import time
 import ssl
+import numpy as np
 
 def main():
     # Load dataset
     dataset_name = "meta-math/MetaMathQA"
     meta_math_ds = load_dataset(dataset_name, streaming=True)
-    meta_math_ds = meta_math_ds.take(1000)
-    meta_math_training = meta_math_ds['train']
+    meta_math_training = meta_math_ds['train'].take(1000)
 
-    # Initialize Stanford POS tagger
-    os.environ['CLASSPATH'] = "/usr/project/xtmp/arb153/icl-mia-benchmarks/stanford-postagger-full-2020-11-17/stanford-postagger.jar"
-    os.environ["STANFORD_MODELS"] = "/usr/project/xtmp/arb153/icl-mia-benchmarks/stanford-postagger-full-2020-11-17/models"
-    tagger = StanfordPOSTagger('english-bidirectional-distsim.tagger')
+    # # Initialize Stanford POS tagger
+    # os.environ['CLASSPATH'] = "/usr/project/xtmp/arb153/icl-mia-benchmarks/stanford-postagger-full-2020-11-17/stanford-postagger.jar"
+    # os.environ["STANFORD_MODELS"] = "/usr/project/xtmp/arb153/icl-mia-benchmarks/stanford-postagger-full-2020-11-17/models"
+    # tagger = StanfordPOSTagger('english-bidirectional-distsim.tagger')
+    import nltk
+    nltk.download('averaged_perceptron_tagger_eng')
+    tagger = nltk.pos_tag
 
     try:
         _create_unverified_https_context = ssl._create_unverified_context
@@ -70,9 +73,6 @@ def main():
     with open('targets.json', 'w') as f:
         json.dump(targets, f)
 
-if __name__ == "__main__":
-    main()
-
 def guided_prompt_split_fn(example, text_key):
     splits = {'guided_prompt_part_1': '', 'guided_prompt_part_2': ''}
     text = example[text_key]
@@ -103,7 +103,7 @@ def ts_guessing_prompt(
 ):
     #question based prompt generation for ts guessing
     text = example[text_key]
-    tags = tagger.tag(text.split())
+    tags = tagger(text.split())
     words = [x for x in tags if x[1] in ['NN', 'JJ', 'VB']]
     if len(words) == 0:
         return "failed", ""
@@ -122,3 +122,6 @@ def ts_guessing_prompt(
     prompt += "\nReply the answer only."
 
     return prompt, word
+
+if __name__ == "__main__":
+    main()

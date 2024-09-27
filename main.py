@@ -18,9 +18,9 @@ def main():
     
     #going to go through the dataset and generate our unique prompts, do not need these for our min_k, perplexity, or cdd attacks
     print('Loading Prompts...')
-    with open('prompts.json', 'r') as f:
+    with open('prompts/MetaMathQA/prompts.json', 'r') as f:
         prompts = json.load(f)
-    with open('targets.json', 'r') as f:
+    with open('prompts/MetaMathQA/targets.json', 'r') as f:
         targets = json.load(f)
 
     print('Performing Guided Prompting attack...')
