@@ -1,99 +1,27 @@
 from vllm import LLM, SamplingParams
-from datasets import load_dataset
 import nltk
-from nltk import word_tokenize
-from nltk.tag import StanfordPOSTagger
 import random
 import numpy as np
-from prompts import Prompt
 from sklearn.metrics import roc_auc_score, roc_curve
 from scipy import stats
 from rouge_score import rouge_scorer
-import os
-import ssl
-import time
+import json
 
 
 def main():
     # Usage
     model_name = "meta-math/MetaMath-Mistral-7B"
-    dataset_name = "meta-math/MetaMathQA"
-
-    # load data
-    meta_math_ds = load_dataset(dataset_name, streaming = True) # load subset
-    # meta_math_ds = meta_math_ds.take(1000) # take only the first 1000 examples while debugging
-    meta_math_ds['train'] = meta_math_ds['train'].take(1000)
-    print('Dataset has been loaded')
 
     # llm = LLM(model=model_name, dtype="half")
     llm = LLM(model=model_name, dtype="half", max_model_len=30000) #decrease model max length to fit in kv cache for vllm
     sampling_params = SamplingParams(temperature=0.7, top_p=0.95)
-
-    meta_math_training = meta_math_ds['train']
-
-    # loop through the data and generate our different prompts 
-    prompts = {
-        "general_prompts": [],
-        "guided_prompts": [],
-        "ts_prompts": [],
-        "standard_queries": []
-    }
-
-    targets = {
-        "guided": [],
-        "ts": [],
-        "answers": []
-    }
-    
-    # load stanford pos tagger, need to change to not hard code paths
-    print('Loading POS Tagger...')
-    os.environ['CLASSPATH']="/usr/project/xtmp/arb153/icl-mia-benchmarks/stanford-postagger-full-2020-11-17/stanford-postagger.jar"
-    os.environ["STANFORD_MODELS"] = "/usr/project/xtmp/arb153/icl-mia-benchmarks/stanford-postagger-full-2020-11-17/models"
-    tagger = StanfordPOSTagger('english-left3words-distsim.tagger')
-    print('POS Tagger Loaded')
-
-    try:
-        _create_unverified_https_context = ssl._create_unverified_context
-    except AttributeError:
-        pass
-    else:
-        ssl._create_default_https_context = _create_unverified_https_context
-
-    nltk.download('punkt_tab')
-
     
     #going to go through the dataset and generate our unique prompts, do not need these for our min_k, perplexity, or cdd attacks
-    print('Generating Guided Prompting and TS-Guessing Prompts...')
-
-    start_time = time.time()
-    for data_point in meta_math_training:
-
-        #split for guided prompting
-        splits = guided_prompt_split_fn(data_point, 'query')
-
-        guided_prompt_insert = splits['guided_prompt_part_1']
-        guided_prompt_target = splits['guided_prompt_part_2']
-
-        prompt = Prompt()
-        guided_prompt = prompt.get_prompt("guided").format(dataset_name = dataset_name,
-                                                           first_piece = guided_prompt_insert)
-        general_prompt = prompt.get_prompt("general").format(first_piece = guided_prompt_insert)
-
-        #ts guessing prompt and target generation, question based method
-        ts_prompt, ts_target = ts_guessing_prompt(data_point, tagger, 'query')
-
-        prompts['general_prompts'].append(general_prompt)
-        prompts['guided_prompts'].append(guided_prompt)
-        
-        prompts['ts_prompts'].append(ts_prompt)
-
-        prompts['standard_queries'].append(data_point['query'])
-
-        targets['guided'].append(guided_prompt_target)
-        targets['ts'].append(ts_target)
-        targets['answers'].append(data_point['response'])
-    
-    print(f'Prompts Generated. Run time was {time.time() - start_time}')
+    print('Loading Prompts...')
+    with open('prompts.json', 'r') as f:
+        prompts = json.load(f)
+    with open('targets.json', 'r') as f:
+        targets = json.load(f)
 
     print('Performing Guided Prompting attack...')
     general_outputs = llm.generate(prompts['general_prompts'], sampling_params)

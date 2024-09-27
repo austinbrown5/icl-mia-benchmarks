@@ -6,6 +6,7 @@ import os
 import json
 from prompts import Prompt
 import time
+import ssl
 
 def main():
     # Load dataset
@@ -18,6 +19,15 @@ def main():
     os.environ['CLASSPATH'] = "/usr/project/xtmp/arb153/icl-mia-benchmarks/stanford-postagger-full-2020-11-17/stanford-postagger.jar"
     os.environ["STANFORD_MODELS"] = "/usr/project/xtmp/arb153/icl-mia-benchmarks/stanford-postagger-full-2020-11-17/models"
     tagger = StanfordPOSTagger('english-bidirectional-distsim.tagger')
+
+    try:
+        _create_unverified_https_context = ssl._create_unverified_context
+    except AttributeError:
+        pass
+    else:
+        ssl._create_default_https_context = _create_unverified_https_context
+
+    nltk.download('punkt_tab')
 
     # Initialize prompt data structures
     prompts = {
