@@ -12,8 +12,16 @@ import numpy as np
 def main():
     # Load dataset
     dataset_name = "meta-math/MetaMathQA"
-    meta_math_ds = load_dataset(dataset_name, streaming=True)
-    meta_math_training = meta_math_ds['train'].take(1000)
+    test_dataset_name = "meta-math/GSM8K_Backward"
+
+    # meta_math_ds = load_dataset(dataset_name, streaming=True)
+    # gsm8k_b = load_dataset(test_dataset_name, streaming =True)
+
+    # meta_math_training = meta_math_ds['train'].take(1000)
+    # meta_math_test = gsm8k_b['test'].take(1000)
+    
+    meta_math_training = load_json_data('data/train.jsonl', num_samples = 1000)
+    meta_math_test = load_json_data('data/test.jsonl', num_samples = 1000)
 
     # # Initialize Stanford POS tagger
     # os.environ['CLASSPATH'] = "/usr/project/xtmp/arb153/icl-mia-benchmarks/stanford-postagger-full-2020-11-17/stanford-postagger.jar"
@@ -45,6 +53,18 @@ def main():
         "answers": []
     }
 
+    test_prompts = {
+        "general_prompts": [],
+        "guided_prompts": [],
+        "ts_prompts": [],
+        "standard_queries": []
+    }
+    test_targets = {
+        "guided": [],
+        "ts": [],
+        "answers": []
+    }
+
     # Generate prompts
     current_time = time.time()
     for data_point in meta_math_training:
@@ -68,9 +88,36 @@ def main():
 
     print(f"Time to generate prompts: {time.time() - current_time}")
     # Save prompts and targets to files
-    with open('prompts.json', 'w') as f:
+    with open('training_prompts.json', 'w') as f:
         json.dump(prompts, f)
-    with open('targets.json', 'w') as f:
+    with open('training_targets.json', 'w') as f:
+        json.dump(targets, f)
+    
+    current_time = time.time()
+    for data_point in meta_math_test:
+        splits = guided_prompt_split_fn(data_point, 'query')
+        guided_prompt_insert = splits['guided_prompt_part_1']
+        guided_prompt_target = splits['guided_prompt_part_2']
+        
+        prompt = Prompt()
+        guided_prompt = prompt.get_prompt("guided").format(dataset_name=dataset_name, first_piece=guided_prompt_insert)
+        general_prompt = prompt.get_prompt("general").format(first_piece=guided_prompt_insert)
+        ts_prompt, ts_target = ts_guessing_prompt(data_point, tagger, 'query')
+
+        test_prompts['general_prompts'].append(general_prompt)
+        test_prompts['guided_prompts'].append(guided_prompt)
+        test_prompts['ts_prompts'].append(ts_prompt)
+        test_prompts['standard_queries'].append(data_point['query'])
+        
+        test_targets['guided'].append(guided_prompt_target)
+        test_targets['ts'].append(ts_target)
+        test_targets['answers'].append(data_point['response'])
+
+    print(f"Time to generate test prompts: {time.time() - current_time}")
+    # Save prompts and targets to files
+    with open('test_prompts.json', 'w') as f:
+        json.dump(prompts, f)
+    with open('test_targets.json', 'w') as f:
         json.dump(targets, f)
 
 def guided_prompt_split_fn(example, text_key):
@@ -122,6 +169,15 @@ def ts_guessing_prompt(
     prompt += "\nReply the answer only."
 
     return prompt, word
+
+def load_json_data(file_path, num_samples=1000):
+    data = []
+    with open(file_path, 'r') as f:
+        for i, line in enumerate(f):
+            if i >= num_samples:
+                break
+            data.append(json.loads(line.strip()))
+    return data
 
 if __name__ == "__main__":
     main()

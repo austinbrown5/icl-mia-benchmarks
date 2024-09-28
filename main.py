@@ -13,23 +13,35 @@ def main():
     model_name = "meta-math/MetaMath-Mistral-7B"
 
     # llm = LLM(model=model_name, dtype="half")
-    llm = LLM(model=model_name, dtype="half", max_model_len=30000) #decrease model max length to fit in kv cache for vllm
+    llm = LLM(
+        model=model_name,
+        dtype="half",
+        max_model_len=2048,
+        enforce_eager=True,
+        max_num_seqs = 50,
+        ) #decrease model max length to fit in kv cache for vllm
     sampling_params = SamplingParams(temperature=0.7, top_p=0.95)
     
     #going to go through the dataset and generate our unique prompts, do not need these for our min_k, perplexity, or cdd attacks
     print('Loading Prompts...')
-    with open('prompts/MetaMathQA/prompts.json', 'r') as f:
-        prompts = json.load(f)
-    with open('prompts/MetaMathQA/targets.json', 'r') as f:
-        targets = json.load(f)
+    with open('prompts/MetaMathQA/test_prompts.json', 'r') as f:
+        test_prompts = json.load(f)
+    with open('prompts/MetaMathQA/test_targets.json', 'r') as f:
+        test_targets = json.load(f)
+    with open('prompts/MetaMathQA/training_prompts.json', 'r') as f:
+        training_prompts = json.load(f)
+    with open('prompts/MetaMathQA/training_targets.json', 'r') as f:
+        training_targets = json.load(f)
 
+    prompts = merge_dicts(training_prompts, test_prompts)
+    targets = merge_dicts(training_targets, test_targets)
     print('Performing Guided Prompting attack...')
     general_outputs = llm.generate(prompts['general_prompts'], sampling_params)
     guided_outputs = llm.generate(prompts['guided_prompts'], sampling_params)
     scorer = rouge_scorer.RougeScorer(['rougeL'], use_stemmer=True)
     general_scores = [scorer.score(ref, hyp)['rougeL'].fmeasure for ref, hyp in zip(targets['answers'], [output.outputs[0].text for output in general_outputs])]
     guided_scores = [scorer.score(ref, hyp)['rougeL'].fmeasure for ref, hyp in zip(targets['guided'], [output.outputs[0].text for output in guided_outputs])]
-     # t_statistic, p_value = stats.ttest_rel(guided_scores, general_scores)
+    # t_statistic, p_value = stats.ttest_rel(guided_scores, general_scores)
     # guided_scores = [1 if p_value < 0.05 else 0 for _ in range(len(guided_scores))] # change to use p-value as membership score ( try p value, 1 - p value)
     gp_scores = [guided - general for guided, general in zip(guided_scores, general_scores)]
 
@@ -40,13 +52,20 @@ def main():
                  for output, target in zip(ts_outputs, targets['ts'])]
 
     print('Performing CDD attack...')
-    cdd_scores = cdd(prompts= prompts['standard_queries'], llm= llm, alpha = 0.05, xi = 0.01 ) #this will be binary 1s and 0s
+    cdd_scores = cdd(prompts= prompts['standard_queries'], llm= llm, alpha = 0.05, xi = 0.01, num_samples = 20 )
     
     print('Performing Min K attack...')
     min_k_scores, loss_scores = min_k_loss(prompts['standard_queries'], llm, k_percent= 10)
 
-    truths = np.ones(len(prompts)) # we know the model has been contaminated
+    training_truths = np.ones(1000) # hard coded bc of debugging
+    test_truths = np.zeros(1000) # hard coded bc of debugging
 
+    truths = np.concatenate((training_truths, test_truths))
+    print(len(cdd_scores))
+    print(len(min_k_scores))
+    print(len(loss_scores))
+    print(len(gp_scores))
+    print(len(ts_scores))
     assert len(truths) == len(cdd_scores)
     assert len(truths) == len(min_k_scores)
     assert len(truths) == len(loss_scores)
@@ -70,10 +89,10 @@ def main():
         tpr_cdd = tpr_at_fpr(truths, cdd_scores, fpr_threshold)
         tpr_min_k = tpr_at_fpr(truths, min_k_scores, fpr_threshold)
 
-        print(f"TPR@1%FPR Guided: {tpr_guided}")
-        print(f"TPR@1%FPR TS: {tpr_ts}")
-        print(f"TPR@1%FPR CDD: {tpr_cdd}")
-        print(f"TPR@1%FPR Min-k: {tpr_min_k}")
+        print(f"TPR@{fpr_threshold * 100}%FPR Guided: {tpr_guided}")
+        print(f"TPR@{fpr_threshold * 100}%FPR TS: {tpr_ts}")
+        print(f"TPR@{fpr_threshold * 100}%FPR CDD: {tpr_cdd}")
+        print(f"TPR@{fpr_threshold * 100}%FPR Min-k: {tpr_min_k}")
 
 def tpr_at_fpr(y_true, y_score, fpr_threshold):
     fpr, tpr, _ = roc_curve(y_true, y_score)
@@ -130,69 +149,98 @@ def ts_guessing_prompt(
 
     return prompt, word
     
-def get_ll_vllm(sentence, llm):
-    # we can only get the logprobs for up to the top 100 tokens with vllm
-    sampling_params = SamplingParams(temperature=0.0, max_tokens=0, logprobs=100)
-    outputs = llm.generate_with_logprobs([sentence], sampling_params)
-    logprobs = outputs[0].outputs[0].logprobs
-
-    all_prob = []
-    for token_logprobs in logprobs:
-        token_prob = np.exp(token_logprobs['token_logprobs'])
-        all_prob.append(token_logprobs['token_logprobs'])
-    
-    ll = sum(all_prob)  # log-likelihood
-    ppl = np.exp(-ll / len(all_prob))  # perplexity
-    prob = np.exp(ll)  # probability
-    
-    return prob, ll, ppl, all_prob
-
 def min_k_loss(texts, llm, k_percent=10):
-    # these are a different type of generation that the others
-    sampling_params = SamplingParams(temperature=0.0, max_tokens=0, logprobs=100)
-    outputs = llm.generate_with_logprobs(texts, sampling_params)
+    sampling_params = SamplingParams(temperature=0.0, logprobs=1, prompt_logprobs=1)
+    outputs = llm.generate(texts, sampling_params)
 
     min_ks = []
     losses = []
-    for output in outputs:
-        token_logprobs = [lp['token_logprobs'] for lp in output.outputs[0].logprobs]
-        logprobs = np.array(token_logprobs)
 
+    for output in outputs:
+        prompt_logprobs = output.prompt_logprobs
+        if prompt_logprobs is None or len(prompt_logprobs) == 0:
+            print(f"Warning: No prompt logprobs for output: {output.text[:50]}...")
+            min_ks.append(0)  # or some default value
+            losses.append(0)  # or some default value
+            continue
+
+        logprobs = []
+        for token_logprobs in prompt_logprobs:
+            if token_logprobs is not None:
+                # Get the highest logprob for each token
+                max_logprob = max(lp.logprob for lp in token_logprobs.values())
+                logprobs.append(max_logprob)
+
+        if len(logprobs) == 0:
+            print(f"Warning: No valid logprobs for output: {output.text[:50]}...")
+            min_ks.append(0)  # or some default value
+            losses.append(0)  # or some default value
+            continue
+
+        logprobs = np.array(logprobs)
         k = max(1, int(len(logprobs) * k_percent / 100))
         topk = np.sort(logprobs)[:k]
         min_k_score = np.mean(topk).item()
-
         min_ks.append(min_k_score)
 
         loss = -np.sum(logprobs)
         losses.append(loss)
 
-
     return min_ks, losses
 
-def cdd(prompts, llm, alpha = 0.05, xi = 0.01):
+# def cdd(prompts, llm, alpha = 0.05, xi = 0.01):
+#     sampling_params_multiple = SamplingParams(
+#         temperature=0.8,
+#         n=50
+#     )
+#     sampling_params_greedy = SamplingParams(
+#         temperature=0,
+#         n=1
+#     )
+#     cdd_scores = []
+#     for prompt in prompts:
+#         samples = llm.generate([prompt] * 50, sampling_params_multiple)
+#         generated_texts = [output.outputs[0].text for output in samples]
+
+#         greedy_sample = llm.generate([prompt], sampling_params_greedy)[0]
+#         s_0 = greedy_sample.outputs[0].text
+
+#         peak = get_peak(generated_texts, s_0, alpha)
+#         is_contaminated = peak / len(generated_texts) > xi
+#         if is_contaminated:
+#             cdd_scores.append(1)
+#         else:
+#             cdd_scores.append(0)
+#     return cdd_scores
+def cdd(prompts, llm, alpha=0.05, xi=0.01, num_samples = 20):
+    #* num_samples normally higher, but set to 10 to speed up debugging
     sampling_params_multiple = SamplingParams(
         temperature=0.8,
-        n=50
+        n=num_samples
     )
     sampling_params_greedy = SamplingParams(
         temperature=0,
         n=1
     )
-    cdd_scores = []
-    for prompt in prompts:
-        samples = llm.generate([prompt] * 50, sampling_params_multiple)
-        generated_texts = [output.outputs[0].text for output in samples]
+    
+    # Generate all samples at once
+    all_samples = llm.generate(prompts, sampling_params_multiple)
+    greedy_samples = llm.generate(prompts, sampling_params_greedy)
 
-        greedy_sample = llm.generate([prompt], sampling_params_greedy)[0]
-        s_0 = greedy_sample.text
+    cdd_scores = []
+    for i, prompt in enumerate(prompts):
+        # Extract the 50 samples for this prompt
+        generated_texts = [output.text for output in all_samples[i].outputs]
+        # generated_texts = [all_samples[i* num_samples + j].outputs[0].text for j in range(num_samples)]
+        
+        # Get the greedy sample for this prompt
+        s_0 = greedy_samples[i].outputs[0].text
 
         peak = get_peak(generated_texts, s_0, alpha)
         is_contaminated = peak / len(generated_texts) > xi
-        if is_contaminated:
-            cdd_scores.append(1)
-        else:
-            cdd_scores.append(0)
+        # cdd_scores.append(1 if is_contaminated else 0)
+        cdd_scores.append(peak)
+
     return cdd_scores
 
 def levenshtein_distance(s1, s2):
@@ -221,6 +269,9 @@ def get_peak(samples, s_0, alpha):
     peak = sum(rhos)
 
     return peak
+
+def merge_dicts(dict1, dict2):
+    return {key: dict1[key] + dict2[key] for key in dict1}
 
 if __name__ == "__main__":
     main()
