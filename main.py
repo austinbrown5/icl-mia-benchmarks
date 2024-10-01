@@ -5,6 +5,7 @@ import numpy as np
 from sklearn.metrics import roc_auc_score, roc_curve
 from scipy import stats
 from rouge_score import rouge_scorer
+from bleurt import score as bleurt_score
 import json
 
 
@@ -35,14 +36,23 @@ def main():
 
     prompts = merge_dicts(training_prompts, test_prompts)
     targets = merge_dicts(training_targets, test_targets)
+
     print('Performing Guided Prompting attack...')
-    general_outputs = llm.generate(prompts['general_prompts'], sampling_params)
-    guided_outputs = llm.generate(prompts['guided_prompts'], sampling_params)
-    scorer = rouge_scorer.RougeScorer(['rougeL'], use_stemmer=True)
-    general_scores = [scorer.score(ref, hyp)['rougeL'].fmeasure for ref, hyp in zip(targets['answers'], [output.outputs[0].text for output in general_outputs])]
-    guided_scores = [scorer.score(ref, hyp)['rougeL'].fmeasure for ref, hyp in zip(targets['guided'], [output.outputs[0].text for output in guided_outputs])]
-    # t_statistic, p_value = stats.ttest_rel(guided_scores, general_scores)
-    # guided_scores = [1 if p_value < 0.05 else 0 for _ in range(len(guided_scores))] # change to use p-value as membership score ( try p value, 1 - p value)
+    test_size = 30#how many samples to use in our significance testing
+    gp_sampling_params = SamplingParams(temperature = 0.7, n = test_size, top_p = 0.95)
+
+    general_outputs = llm.generate(prompts['general_prompts'], gp_sampling_params)
+    guided_outputs = llm.generate(prompts['guided_prompts'], gp_sampling_params)
+
+    rouge_scorer = rouge_scorer.RougeScorer(['rougeL'], use_stemmer=True)
+    bleurt_scorer = bleurt_score.BleurtScorer()
+
+    rouge_general_scores = [scorer.score(ref, hyp)['rougeL'].fmeasure for ref, hyp in zip(targets['answers'], [output.outputs[0].text for output in general_outputs])]
+    rouge_guided_scores = [scorer.score(ref, hyp)['rougeL'].fmeasure for ref, hyp in zip(targets['guided'], [output.outputs[0].text for output in guided_outputs])]
+    
+    bleurt_general_scores = bleurt_scorer.score(references=targets['answers'], candidates=[output.outputs[0].text for output in general_outputs])
+    bleurt_guided_scores = bleurt_scorer.score(references=targets['guided'], candidates=[output.outputs[0].text for output in guided_outputs])
+
     gp_scores = [guided - general for guided, general in zip(guided_scores, general_scores)]
 
 
