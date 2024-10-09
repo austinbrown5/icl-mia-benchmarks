@@ -44,16 +44,65 @@ def main():
     general_outputs = llm.generate(prompts['general_prompts'], gp_sampling_params)
     guided_outputs = llm.generate(prompts['guided_prompts'], gp_sampling_params)
 
+    #general outputs and guided outputs will contain test_size entries per prompt
+    #for each of these prompts, we want to calculate the rouge and bleurt scores compared to the target
+    #this means we will have 30 rouge scores and 30 bleurt scores per prompt for guided and general
+    #we then want to conduct a signifigance test to see if there is a difference in scores for guided or general
+    #i should now have two p values per target, one for the test of the bleurt scores and one for the rouge l scores
     rouge_scorer = rouge_scorer.RougeScorer(['rougeL'], use_stemmer=True)
     bleurt_scorer = bleurt_score.BleurtScorer()
 
-    rouge_general_scores = [scorer.score(ref, hyp)['rougeL'].fmeasure for ref, hyp in zip(targets['answers'], [output.outputs[0].text for output in general_outputs])]
-    rouge_guided_scores = [scorer.score(ref, hyp)['rougeL'].fmeasure for ref, hyp in zip(targets['guided'], [output.outputs[0].text for output in guided_outputs])]
-    
-    bleurt_general_scores = bleurt_scorer.score(references=targets['answers'], candidates=[output.outputs[0].text for output in general_outputs])
-    bleurt_guided_scores = bleurt_scorer.score(references=targets['guided'], candidates=[output.outputs[0].text for output in guided_outputs])
+    gp_scores = []
 
-    gp_scores = [guided - general for guided, general in zip(guided_scores, general_scores)]
+    rouge_scores_general = []
+    rouge_scores_guided = []
+    bleurt_scores_general = []
+    bleurt_scores_guided = []
+
+    for i, target in enumerate(targets['guided']):
+        general_rouge_scores = []
+        general_bleurt_scores = []
+        guided_rouge_scores = []
+        guided_bleurt_scores = []
+
+        assert len(general_outputs[i]) == test_size, 'LLM Generatoin failed, we do not have n generations per prompt'
+        assert len(guided_outputs[i]) == test_size, 'LLM Generatoin failed, we do not have n generations per prompt'
+        
+        for j in range(test_size):
+            general_output = general_outputs[i].outputs[j].text
+            guided_output = guided_outputs[i].outputs[j].text
+            
+            general_rouge = rouge_scorer.score(target, general_output)['rougeL'].fmeasure
+            guided_rouge = rouge_scorer.score(target, guided_output)['rougeL'].fmeasure
+            
+            general_bleurt = bleurt_scorer.score([target], [general_output])[0]
+            guided_bleurt = bleurt_scorer.score([target], [guided_output])[0]
+            
+            general_rouge_scores.append(general_rouge)
+            general_bleurt_scores.append(general_bleurt)
+            guided_rouge_scores.append(guided_rouge)
+            guided_bleurt_scores.append(guided_bleurt)
+        
+        rouge_scores_general.append(general_rouge_scores)
+        rouge_scores_guided.append(guided_rouge_scores)
+        bleurt_scores_general.append(general_bleurt_scores)
+        bleurt_scores_guided.append(guided_bleurt_scores)
+
+    p_values_rouge = []
+    p_values_bleurt = []
+    harmonic_means = []
+
+    for i in range(len(targets['guided'])):
+        _, p_value_rouge = stats.ttest_ind(rouge_scores_general[i], rouge_scores_guided[i])
+        _, p_value_bleurt = stats.ttest_ind(bleurt_scores_general[i], bleurt_scores_guided[i])
+        p_values_rouge.append(p_value_rouge)
+        p_values_bleurt.append(p_value_bleurt)
+        
+        # Calculate harmonic mean of p-values
+        harmonic_mean = harmonic_mean_two(p_value_rouge, p_value_bleurt)
+        harmonic_means.append(harmonic_mean)
+        significance = 1 if harmonic_mean < 0.05 else 0
+        gp_scores.append(significance)
 
 
     print('Performing TS Guessing attack...')
@@ -64,40 +113,28 @@ def main():
     print('Performing CDD attack...')
     cdd_scores = cdd(prompts= prompts['standard_queries'], llm= llm, alpha = 0.05, xi = 0.01, num_samples = 20 )
     
-    print('Performing Min K attack...')
-    min_k_scores, loss_scores = min_k_loss(prompts['standard_queries'], llm, k_percent= 10)
+    # min_k and loos scores are now calculated using huggingface instead of vllm
+    # print('Performing Min K attack...')
+    # min_k_scores, loss_scores = min_k_loss(prompts['standard_queries'], llm, k_percent= 10)
 
     training_truths = np.ones(1000) # hard coded bc of debugging
     test_truths = np.zeros(1000) # hard coded bc of debugging
 
     truths = np.concatenate((training_truths, test_truths))
-    print(len(cdd_scores))
-    print(len(min_k_scores))
-    print(len(loss_scores))
-    print(len(gp_scores))
-    print(len(ts_scores))
-    assert len(truths) == len(cdd_scores)
-    assert len(truths) == len(min_k_scores)
-    assert len(truths) == len(loss_scores)
-    assert len(truths) == len(gp_scores)
-    assert len(truths) == len(ts_scores)
 
     #scoring
     aucroc_guided = roc_auc_score(truths, gp_scores)
     aucroc_ts = roc_auc_score(truths, ts_scores)
     aucroc_cdd = roc_auc_score(truths, cdd_scores)
-    aucroc_min_k = roc_auc_score(truths, min_k_scores)
 
     print(f"AUCROC Guided: {aucroc_guided}")
     print(f"AUCROC TS: {aucroc_ts}")
     print(f"AUCROC CDD: {aucroc_cdd}")
-    print(f"AUCROC Min-k: {aucroc_min_k}")
 
     for fpr_threshold in [0.01, 0.05, 0.10, 0.25]:
         tpr_guided = tpr_at_fpr(truths, gp_scores, fpr_threshold)
         tpr_ts = tpr_at_fpr(truths, ts_scores, fpr_threshold)
         tpr_cdd = tpr_at_fpr(truths, cdd_scores, fpr_threshold)
-        tpr_min_k = tpr_at_fpr(truths, min_k_scores, fpr_threshold)
 
         print(f"TPR@{fpr_threshold * 100}%FPR Guided: {tpr_guided}")
         print(f"TPR@{fpr_threshold * 100}%FPR TS: {tpr_ts}")
@@ -130,34 +167,6 @@ def guided_prompt_split_fn(example, text_key):
         splits['guided_prompt_part_2'] = ''
 
     return splits
-
-def ts_guessing_prompt(
-    example, 
-    tagger,
-    text_key,
-    type_hint=False,
-):
-    #question based prompt generation for ts guessing
-    text = example[text_key]
-    tags = tagger.tag(text.split())
-    words = [x for x in tags if x[1] in ['NN', 'JJ', 'VB']]
-    if len(words) == 0:
-        return "failed", ""
-    idx = np.random.randint(len(words))
-    word = words[idx][0]
-    for i in range(len(text)-len(word)+1):
-        if text[i:(i+len(word))] == word:
-            text = text[:i] + "[MASK]" + text[(i+len(word)):]
-            break
-
-    prompt = "Complete the sentence in one word:"
-    prompt += f"\n\n{text}"
-    if type_hint:
-        example_type = example["type"]
-        prompt += f"\nHint: {example_type}"
-    prompt += "\nReply the answer only."
-
-    return prompt, word
     
 def min_k_loss(texts, llm, k_percent=10):
     sampling_params = SamplingParams(temperature=0.0, logprobs=1, prompt_logprobs=1)
@@ -197,6 +206,11 @@ def min_k_loss(texts, llm, k_percent=10):
         losses.append(loss)
 
     return min_ks, losses
+
+def harmonic_mean_two(p1, p2):
+    assert p1 > 0, 'P-values must be greater than 0'
+    assert p2 > 0, 'P-values must be greater than 0'
+    return 2 / ((1 / p1) + (1/p2))
 
 # def cdd(prompts, llm, alpha = 0.05, xi = 0.01):
 #     sampling_params_multiple = SamplingParams(
@@ -247,9 +261,9 @@ def cdd(prompts, llm, alpha=0.05, xi=0.01, num_samples = 20):
         s_0 = greedy_samples[i].outputs[0].text
 
         peak = get_peak(generated_texts, s_0, alpha)
-        is_contaminated = peak / len(generated_texts) > xi
+        is_contaminated = (peak / len(generated_texts)) > xi
         # cdd_scores.append(1 if is_contaminated else 0)
-        cdd_scores.append(peak)
+        cdd_scores.append(is_contaminated)
 
     return cdd_scores
 
