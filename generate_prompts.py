@@ -14,6 +14,10 @@ def main():
     dataset_name = "meta-math/MetaMathQA"
     test_dataset_name = "meta-math/GSM8K_Backward"
 
+    # Load openai key (for ts-guessing icl)
+    chatgpt_api_key = os.getenv("OPENAI_API_KEY")
+    assert chatgpt_api_key
+
     # meta_math_ds = load_dataset(dataset_name, streaming=True)
     # gsm8k_b = load_dataset(test_dataset_name, streaming =True)
 
@@ -75,7 +79,7 @@ def main():
         prompt = Prompt()
         guided_prompt = prompt.get_prompt("guided").format(dataset_name=dataset_name, first_piece=guided_prompt_insert)
         general_prompt = prompt.get_prompt("general").format(first_piece=guided_prompt_insert)
-        ts_prompt, ts_target = ts_guessing_prompt(data_point, tagger, 'query')
+        ts_prompt, ts_target = ts_guessing_prompt(data_point, tagger, 'query', chatgpt_api_key = chatgpt_api_key)
 
         prompts['general_prompts'].append(general_prompt)
         prompts['guided_prompts'].append(guided_prompt)
@@ -102,7 +106,7 @@ def main():
         prompt = Prompt()
         guided_prompt = prompt.get_prompt("guided").format(dataset_name=dataset_name, first_piece=guided_prompt_insert)
         general_prompt = prompt.get_prompt("general").format(first_piece=guided_prompt_insert)
-        ts_prompt, ts_target = ts_guessing_prompt(data_point, tagger, 'query')
+        ts_prompt, ts_target = ts_guessing_prompt(data_point, tagger, 'query', chatgpt_api_key = chatgpt_api_key)
 
         test_prompts['general_prompts'].append(general_prompt)
         test_prompts['guided_prompts'].append(guided_prompt)
@@ -142,33 +146,65 @@ def guided_prompt_split_fn(example, text_key):
 
     return splits
 
+import openai
+
 def ts_guessing_prompt(
     example, 
     tagger,
     text_key,
     type_hint=False,
+    chatgpt_api_key=None,
+    num_shots=5
 ):
-    #question based prompt generation for ts guessing
+    if chatgpt_api_key is None:
+        raise ValueError("ChatGPT API key is required.")
     text = example[text_key]
     tags = tagger(text.split())
     words = [x for x in tags if x[1] in ['NN', 'JJ', 'VB']]
+    
     if len(words) == 0:
         return "failed", ""
-    idx = np.random.randint(len(words))
-    word = words[idx][0]
-    for i in range(len(text)-len(word)+1):
-        if text[i:(i+len(word))] == word:
-            text = text[:i] + "[MASK]" + text[(i+len(word)):]
+
+    few_shot_examples = [
+        "Q: What is the main event in the sentence 'The quick brown fox jumps over the lazy dog'?\nA: jumps",
+        "Q: What is the main characteristic of the fox in 'The quick brown fox jumps over the lazy dog'?\nA: quick",
+        "Q: What is the key entity in 'The meeting was held in New York City'?\nA: meeting",
+        "Q: What is the key entity in 'The cat sat on the mat'?\nA: cat",
+        "Q: What is the key action in 'She quickly finished her homework'?\nA: finished"
+    ]
+
+    selected_few_shots = "\n\n".join(few_shot_examples[:num_shots])
+    
+    prompt = f"{selected_few_shots}\n\nQ: What is the most significant word in the sentence '{text}'?\nA:"
+
+    try:
+        response = openai.ChatCompletion.create(
+            model="gpt-3.5-turbo",
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=5,
+            temperature=0.3
+        )
+        most_significant_word = response.choices[0].message['content'].strip()
+    except Exception as e:
+        return f"Error with ChatGPT API: {e}", ""
+
+    if most_significant_word not in [x[0] for x in words]:
+        return "failed", ""
+
+    word = most_significant_word
+    for i in range(len(text) - len(word) + 1):
+        if text[i:(i + len(word))] == word:
+            text = text[:i] + "[MASK]" + text[(i + len(word)):]
             break
 
-    prompt = "Complete the sentence in one word:"
-    prompt += f"\n\n{text}"
+    final_prompt = "Complete the sentence in one word:"
+    final_prompt += f"\n\n{text}"
     if type_hint:
-        example_type = example["type"]
-        prompt += f"\nHint: {example_type}"
-    prompt += "\nReply the answer only."
+        example_type = example.get("type", "unknown")
+        final_prompt += f"\nHint: {example_type}"
+    final_prompt += "\nReply the answer only."
 
-    return prompt, word
+    return final_prompt, word
 
 def load_json_data(file_path, num_samples=1000):
     data = []
