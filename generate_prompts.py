@@ -23,7 +23,7 @@ def main():
 
     # meta_math_training = meta_math_ds['train'].take(1000)
     # meta_math_test = gsm8k_b['test'].take(1000)
-    
+
     meta_math_training = load_json_data('data/train.jsonl', num_samples = 1000)
     meta_math_test = load_json_data('data/test.jsonl', num_samples = 1000)
 
@@ -75,7 +75,7 @@ def main():
         splits = guided_prompt_split_fn(data_point, 'query')
         guided_prompt_insert = splits['guided_prompt_part_1']
         guided_prompt_target = splits['guided_prompt_part_2']
-        
+
         prompt = Prompt()
         guided_prompt = prompt.get_prompt("guided").format(dataset_name=dataset_name, first_piece=guided_prompt_insert)
         general_prompt = prompt.get_prompt("general").format(first_piece=guided_prompt_insert)
@@ -85,10 +85,10 @@ def main():
         prompts['guided_prompts'].append(guided_prompt)
         prompts['ts_prompts'].append(ts_prompt)
         prompts['standard_queries'].append(data_point['query'])
-        
+
         targets['guided'].append(guided_prompt_target)
         targets['ts'].append(ts_target)
-        targets['answers'].append(data_point['response'])
+        targets['answers'].append(data_point.response)
 
     print(f"Time to generate prompts: {time.time() - current_time}")
     # Save prompts and targets to files
@@ -96,13 +96,13 @@ def main():
         json.dump(prompts, f)
     with open('training_targets.json', 'w') as f:
         json.dump(targets, f)
-    
+
     current_time = time.time()
     for data_point in meta_math_test:
         splits = guided_prompt_split_fn(data_point, 'query')
         guided_prompt_insert = splits['guided_prompt_part_1']
         guided_prompt_target = splits['guided_prompt_part_2']
-        
+
         prompt = Prompt()
         guided_prompt = prompt.get_prompt("guided").format(dataset_name=dataset_name, first_piece=guided_prompt_insert)
         general_prompt = prompt.get_prompt("general").format(first_piece=guided_prompt_insert)
@@ -112,10 +112,10 @@ def main():
         test_prompts['guided_prompts'].append(guided_prompt)
         test_prompts['ts_prompts'].append(ts_prompt)
         test_prompts['standard_queries'].append(data_point['query'])
-        
+
         test_targets['guided'].append(guided_prompt_target)
         test_targets['ts'].append(ts_target)
-        test_targets['answers'].append(data_point['response'])
+        test_targets['answers'].append(data_point.response)
 
     print(f"Time to generate test prompts: {time.time() - current_time}")
     # Save prompts and targets to files
@@ -146,7 +146,9 @@ def guided_prompt_split_fn(example, text_key):
 
     return splits
 
-import openai
+from openai import OpenAI
+
+client = OpenAI()
 
 def ts_guessing_prompt(
     example, 
@@ -161,7 +163,7 @@ def ts_guessing_prompt(
     text = example[text_key]
     tags = tagger(text.split())
     words = [x for x in tags if x[1] in ['NN', 'JJ', 'VB']]
-    
+
     if len(words) == 0:
         return "failed", ""
 
@@ -174,17 +176,15 @@ def ts_guessing_prompt(
     ]
 
     selected_few_shots = "\n\n".join(few_shot_examples[:num_shots])
-    
+
     prompt = f"{selected_few_shots}\n\nQ: What is the most significant word in the sentence '{text}'?\nA:"
 
     try:
-        response = openai.ChatCompletion.create(
-            model="gpt-3.5-turbo",
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=5,
-            temperature=0.3
-        )
-        most_significant_word = response.choices[0].message['content'].strip()
+        response = client.chat.completions.create(model="gpt-3.5-turbo",
+        messages=[{"role": "user", "content": prompt}],
+        max_tokens=5,
+        temperature=0.3)
+        most_significant_word = response.choices[0].message.content.strip()
     except Exception as e:
         return f"Error with ChatGPT API: {e}", ""
 

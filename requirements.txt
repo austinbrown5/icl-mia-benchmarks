@@ -1,7 +1,12 @@
 vllm
-datasets
 nltk
 numpy
 scikit-learn
-scipy
 rouge-score
+bleurt @ file:///usr/project/xtmp/arb153/icl-mia-benchmarks/bleurt
+openai
+pandas
+datasets
+prompts
+thefuzz
+transformers
